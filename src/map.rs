@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 use std::hash::Hash;
 
 #[derive(Clone)]
@@ -7,10 +8,35 @@ struct Entry<V: Clone> {
     seq: u64,
 }
 
+struct SeqKey<K> {
+    seq: u64,
+    key: K,
+}
+
+impl<K> PartialEq for SeqKey<K> {
+    fn eq(&self, other: &Self) -> bool {
+        self.seq == other.seq
+    }
+}
+
+impl<K> Eq for SeqKey<K> {}
+
+impl<K> PartialOrd for SeqKey<K> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<K> Ord for SeqKey<K> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.seq.cmp(&other.seq)
+    }
+}
+
 pub struct Lru<K: Clone + Eq + Hash, V: Clone> {
     limit: usize,
     data: HashMap<K, Entry<V>>,
-    lru: BTreeMap<u64, K>,
+    lru: BinaryHeap<Reverse<SeqKey<K>>>,
     seq: u64,
 }
 
@@ -19,26 +45,32 @@ impl<K: Clone + Eq + Hash, V: Clone> Lru<K, V> {
         Self {
             limit,
             data: Default::default(),
-            lru: Default::default(),
+            lru: BinaryHeap::new(),
             seq: 0,
         }
     }
 
-    fn hit(&mut self, key: &K) {
-        self.seq += 1;
-        if let Some(seq) = self.data.get(key).map(|entry| entry.seq) {
-            self.lru.remove(&seq);
+    fn evict_one(&mut self) -> Option<(K, V)> {
+        while let Some(Reverse(sk)) = self.lru.pop() {
+            if let Some(entry) = self.data.get(&sk.key)
+                && entry.seq == sk.seq
+            {
+                return self.data.remove(&sk.key).map(|e| (sk.key, e.value));
+            }
         }
-        self.lru.insert(self.seq, key.clone());
-        if let Some(entry) = self.data.get_mut(key) {
-            entry.seq = self.seq;
-        }
+        None
     }
 
     pub fn get(&mut self, key: &K) -> Option<V> {
-        if let Some(entry) = self.data.get(key).cloned() {
-            self.hit(key);
-            Some(entry.value)
+        if let Some(entry) = self.data.get_mut(key) {
+            let value = entry.value.clone();
+            self.seq += 1;
+            entry.seq = self.seq;
+            self.lru.push(Reverse(SeqKey {
+                seq: self.seq,
+                key: key.clone(),
+            }));
+            Some(value)
         } else {
             None
         }
@@ -48,16 +80,23 @@ impl<K: Clone + Eq + Hash, V: Clone> Lru<K, V> {
         if self.limit == 0 {
             return (None, None);
         }
-        if !self.data.contains_key(&key) {
-            let evicted = if self.data.len() == self.limit {
-                let (&seq, _) = self.lru.first_key_value().expect("full cache");
-                self.lru
-                    .remove(&seq)
-                    .and_then(|k| self.data.remove(&k).map(|v| (k, v.value)))
+        if let Some(entry) = self.data.get_mut(&key) {
+            let old_value = std::mem::replace(&mut entry.value, value);
+            self.seq += 1;
+            entry.seq = self.seq;
+            self.lru.push(Reverse(SeqKey { seq: self.seq, key }));
+            (Some(old_value), None)
+        } else {
+            let evicted = if self.data.len() >= self.limit {
+                self.evict_one()
             } else {
                 None
             };
-            self.hit(&key);
+            self.seq += 1;
+            self.lru.push(Reverse(SeqKey {
+                seq: self.seq,
+                key: key.clone(),
+            }));
             self.data.insert(
                 key,
                 Entry {
@@ -66,17 +105,6 @@ impl<K: Clone + Eq + Hash, V: Clone> Lru<K, V> {
                 },
             );
             (None, evicted)
-        } else {
-            self.hit(&key);
-            let removed = self.data.remove(&key).map(|entry| entry.value.clone());
-            self.data.insert(
-                key,
-                Entry {
-                    value,
-                    seq: self.seq,
-                },
-            );
-            (removed, None)
         }
     }
 }
@@ -111,24 +139,3 @@ mod tests {
         assert_eq!(lru.get(&3), Some("c"));
     }
 }
-
-/* TODO:
-
-1. Lazy BTreeMap (biggest win)
-Don't remove the old entry on get — just insert the new seq. On eviction, walk from the front and skip stale entries (where entry.seq in data doesn't match the seq in lru). Cuts BTreeMap operations per get from 2 to 1. Tradeoff: BTreeMap holds ghost entries (but each key has at most one ghost at a time, so size stays bounded at 2× cache limit).
-
-2. Merge the two HashMap lookups in hit
-Currently data.get(key) then data.get_mut(key) — two lookups. A single data.get_mut(key) reads and updates entry.seq in one shot.
-
-3. In-place value update for existing keys in put
-data.remove + data.insert causes a reallocation cycle. data.get_mut(key).unwrap().value = value instead.
-
-4. Eliminate contains_key + separate access in put
-Use the entry API to avoid the double lookup.
-
-5. Replace BTreeMap with a BinaryHeap + lazy deletion
-Same lazy-skip idea as #1 but a binary heap has better cache behaviour for the common case (just peeking/popping the min). Works well if evictions are rare relative to gets.
-
-The combination of #1 + #2 + #3 should close most of the gap with dll.
-
-*/
