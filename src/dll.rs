@@ -45,11 +45,6 @@ impl<K: Clone + Eq + Hash, V: Clone> Lru<K, V> {
         self.data.is_empty()
     }
 
-    /// Check if node is the most recently used (tail).
-    fn is_last(&mut self, node: *mut Node<K>) -> bool {
-        self.tail == node
-    }
-
     /// Heap-allocate a detached node.
     fn node(key: K) -> *mut Node<K> {
         let node = Node {
@@ -126,7 +121,7 @@ impl<K: Clone + Eq + Hash, V: Clone> Lru<K, V> {
     /// Look up a value and promote its key to most-recently-used.
     pub fn get(&mut self, key: &K) -> Option<V> {
         let Entry { value, node } = self.data.get(key).cloned()?;
-        if !self.is_last(node) {
+        if self.tail != node {
             self.unlink(node);
             self.push_back(node);
         }
@@ -139,7 +134,15 @@ impl<K: Clone + Eq + Hash, V: Clone> Lru<K, V> {
             return (None, None);
         }
 
-        if !self.data.contains_key(&key) {
+        if let Some(entry) = self.data.get_mut(&key) {
+            let removed = std::mem::replace(&mut entry.value, value);
+            let node = entry.node;
+            if self.tail != node {
+                self.unlink(node);
+                self.push_back(node);
+            }
+            (Some(removed), None)
+        } else {
             let evicted = if self.data.len() >= self.limit {
                 let evicted = self
                     .pull_head()
@@ -154,26 +157,9 @@ impl<K: Clone + Eq + Hash, V: Clone> Lru<K, V> {
                 None
             };
             let node = Self::node(key.clone());
-            let entry = Entry { value, node };
-            self.data.insert(key, entry);
+            self.data.insert(key, Entry { value, node });
             self.push_back(node);
             (None, evicted)
-        } else {
-            let Entry {
-                value: removed,
-                node,
-            } = self
-                .data
-                .get(&key)
-                .cloned()
-                .expect("checked by contains_key");
-            self.unlink(node);
-            self.push_back(node);
-            self.data
-                .get_mut(&key)
-                .expect("checked by contains_key")
-                .value = value;
-            (Some(removed), None)
         }
     }
 
