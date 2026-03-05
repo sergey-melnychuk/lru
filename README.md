@@ -53,9 +53,11 @@ discarded lazily during eviction.
 
 ## Benchmark results
 
+### Apple M1
+
 Environment: Apple M1, 16 GB RAM, Rust 1.93.1, `cargo bench` (Criterion 0.8).
 
-### `get` — lookup + promote to MRU (sequential scan, 100% hit rate)
+#### `get` — lookup + promote to MRU (sequential scan, 100% hit rate)
 
 | Cache size | `dll` (O(1)) | `map` (O(log N)) | Δ |
 |------------|-------------|-------------------|---|
@@ -64,7 +66,7 @@ Environment: Apple M1, 16 GB RAM, Rust 1.93.1, `cargo bench` (Criterion 0.8).
 | 100,000 | 21.8 ns | 19.7 ns | **map 10% faster** |
 | 1,000,000 | 60.3 ns | 53.5 ns | **map 11% faster** |
 
-### `put` — insert + evict LRU (cache always full, every put evicts)
+#### `put` — insert + evict LRU (cache always full, every put evicts)
 
 | Cache size | `dll` (O(1)) | `map` (O(log N)) | Δ |
 |------------|-------------|-------------------|---|
@@ -72,6 +74,32 @@ Environment: Apple M1, 16 GB RAM, Rust 1.93.1, `cargo bench` (Criterion 0.8).
 | 10,000 | 87.8 ns | 99.0 ns | dll 13% faster |
 | 100,000 | 98.0 ns | 118.7 ns | dll 21% faster |
 | 1,000,000 | 158.2 ns | 220.1 ns | dll 39% faster |
+
+### Intel 12th Gen (Alder Lake)
+
+Environment: Intel i7-1260P, 32 GB RAM, Rust 1.93.1, `cargo bench` (Criterion 0.8).
+
+#### `get` — lookup + promote to MRU (sequential scan, 100% hit rate)
+
+| Cache size | `dll` (O(1)) | `map` (O(log N)) | Δ |
+|------------|-------------|-------------------|---|
+| 1,000 | 11.1 ns | 16.5 ns | **dll 33% faster** |
+| 10,000 | 12.8 ns | 18.3 ns | **dll 30% faster** |
+| 100,000 | 17.7 ns | 27.8 ns | **dll 36% faster** |
+| 1,000,000 | 75.4 ns | 80.0 ns | dll 6% faster |
+
+#### `put` — insert + evict LRU (cache always full, every put evicts)
+
+| Cache size | `dll` (O(1)) | `map` (O(log N)) | Δ |
+|------------|-------------|-------------------|---|
+| 1,000 | 53.5 ns | 68.5 ns | dll 22% faster |
+| 10,000 | 52.4 ns | 73.8 ns | dll 29% faster |
+| 100,000 | 59.1 ns | 99.1 ns | dll 40% faster |
+| 1,000,000 | 160.2 ns | 240.0 ns | dll 33% faster |
+
+**Note:** The Intel results show `dll` winning across all benchmarks, contrasting with
+M1 where `map` wins on `get`. This highlights how cache architecture differences
+(M1's larger L1/L2, different prefetcher behavior) can flip which algorithm wins.
 
 ## Why O(log N) wins on `get`
 
